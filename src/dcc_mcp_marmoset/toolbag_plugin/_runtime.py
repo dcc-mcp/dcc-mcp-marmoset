@@ -25,10 +25,16 @@ class MarmosetCommands:
         self._mset = mset
         self._commands = {
             "diagnostics.ping": self._ping,
+            "diagnostics.inspect_runtime": self._inspect_runtime,
+            "diagnostics.validate_assets": self._validate_assets,
+            "diagnostics.set_display_tooltips": self._set_display_tooltips,
+            "diagnostics.free_unused_resources": self._free_unused_resources,
             "scene.inspect": self._inspect_scene,
             "scene.import_model": self._import_model,
             "scene.set_visibility": self._set_visibility,
+            "scene.frame": self._frame_scene,
             "material.create_pbr": self._create_pbr_material,
+            "material.inspect": self._inspect_materials,
             "scene.save": self._save_scene,
             "render.camera": self._render_camera,
         }
@@ -50,6 +56,81 @@ class MarmosetCommands:
             "graphics_adapter": str(self._mset.getGraphicsAdapterName()),
             "scene_path": str(self._mset.getScenePath() or ""),
         }
+
+    def _inspect_runtime(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        _require_keys(params, set())
+        objects = list(self._mset.getAllObjects())
+        materials = list(self._mset.getAllMaterials())
+        preferences = self._mset.getPreferences()
+        camera = self._mset.getCamera()
+        tooltip_root = Path(sys.executable).resolve().parent / "data" / "text"
+        tooltip_file_count = (
+            sum(1 for item in tooltip_root.rglob("*") if item.is_file())
+            if tooltip_root.is_dir()
+            else 0
+        )
+        return {
+            "toolbag_version": str(self._mset.getToolbagVersion()),
+            "graphics_adapter": str(self._mset.getGraphicsAdapterName()),
+            "trace_backend": _optional_call(self._mset, "getTraceBackendType"),
+            "optimal_trace_backend": _optional_call(self._mset, "getOptimalTraceBackendType"),
+            "scene_path": str(self._mset.getScenePath() or ""),
+            "scene_bounds": _json_value(self._mset.getSceneBounds()),
+            "object_count": len(objects),
+            "material_count": len(materials),
+            "active_camera": _object_summary(camera) if camera is not None else None,
+            "tooltip_database": {
+                "path": str(tooltip_root),
+                "directory_exists": tooltip_root.is_dir(),
+                "file_count": tooltip_file_count,
+                "available": tooltip_file_count > 0,
+            },
+            "preferences": {
+                "display_tooltips": bool(getattr(preferences, "displayTooltips", False)),
+                "ray_trace_backend": str(getattr(preferences, "rayTraceBackend", "")),
+                "default_tangent_method": str(getattr(preferences, "defaultTangentMethod", "")),
+            },
+        }
+
+    def _validate_assets(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        _require_keys(params, {"max_materials"})
+        max_materials = _bounded_int(params.get("max_materials", 500), "max_materials", 1, 5000)
+        materials = list(self._mset.getAllMaterials())
+        checked = []
+        missing = []
+        for material in materials[:max_materials]:
+            for texture in _material_texture_paths(material):
+                record = {
+                    "material": str(material.name),
+                    "slot": texture["slot"],
+                    "field": texture["field"],
+                    "path": texture["path"],
+                    "exists": Path(texture["path"]).is_file(),
+                }
+                checked.append(record)
+                if not record["exists"]:
+                    missing.append(record)
+        return {
+            "material_count": len(materials),
+            "checked_texture_count": len(checked),
+            "missing_texture_count": len(missing),
+            "missing_textures": missing,
+            "truncated": len(materials) > max_materials,
+        }
+
+    def _set_display_tooltips(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        _require_keys(params, {"enabled"})
+        enabled = params.get("enabled")
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        preferences = self._mset.getPreferences()
+        preferences.displayTooltips = enabled
+        return {"display_tooltips": bool(preferences.displayTooltips)}
+
+    def _free_unused_resources(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        _require_keys(params, set())
+        self._mset.freeUnusedResources()
+        return {"status": "completed"}
 
     def _inspect_scene(self, params: Dict[str, Any]) -> Dict[str, Any]:
         _require_keys(params, {"max_objects"})
@@ -89,6 +170,32 @@ class MarmosetCommands:
         for uid in requested:
             by_uid[uid].visible = visible
         return {"visible": visible, "objects": [_object_summary(by_uid[uid]) for uid in requested]}
+
+    def _frame_scene(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        _require_keys(params, {"object_uid"})
+        object_uid = str(params.get("object_uid") or "").strip()
+        if not object_uid:
+            self._mset.frameScene()
+            return {"framed": "scene", "scene_bounds": _json_value(self._mset.getSceneBounds())}
+        target = next(
+            (item for item in self._mset.getAllObjects() if str(item.uid) == object_uid),
+            None,
+        )
+        if target is None:
+            raise ValueError(f"Toolbag object not found: {object_uid}")
+        self._mset.setSelectedObjects([target])
+        self._mset.frameObject(target)
+        return {"framed": "object", "object": _object_summary(target)}
+
+    def _inspect_materials(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        _require_keys(params, {"max_materials"})
+        max_materials = _bounded_int(params.get("max_materials", 200), "max_materials", 1, 1000)
+        materials = list(self._mset.getAllMaterials())
+        return {
+            "material_count": len(materials),
+            "materials": [_material_summary(item) for item in materials[:max_materials]],
+            "truncated": len(materials) > max_materials,
+        }
 
     def _create_pbr_material(self, params: Dict[str, Any]) -> Dict[str, Any]:
         _require_keys(
@@ -230,6 +337,7 @@ class PluginRuntime:
         self._log_handle: Optional[Any] = None
         self._token = secrets.token_urlsafe(32)
         self._lifetime_window: Optional[Any] = None
+        self._status_label: Optional[Any] = None
         self._stopped = False
         self._poll_callback = self.poll
         self._shutdown_callback = self.stop
@@ -246,12 +354,20 @@ class PluginRuntime:
         self._start_child(port)
         self._mset.callbacks.onPeriodicUpdate = self._poll_callback
         self._mset.callbacks.onShutdownPlugin = self._shutdown_callback
-        self._lifetime_window = self._mset.UIWindow("DCC-MCP")
-        stop_button = self._mset.UIButton("Stop MCP")
+        self._lifetime_window = self._mset.UIWindow("DCC-MCP · Marmoset")
+        self._status_label = self._mset.UILabel("Connected · Agent ready")
+        route_label = self._mset.UILabel(
+            f"Toolbag {self._mset.getToolbagVersion()} · 127.0.0.1:{port}"
+        )
+        stop_button = self._mset.UIButton("Stop")
         stop_button.onClick = self._stop_click_callback
+        self._lifetime_window.addElement(self._status_label)
+        self._lifetime_window.addReturn()
+        self._lifetime_window.addElement(route_label)
+        self._lifetime_window.addReturn()
         self._lifetime_window.addElement(stop_button)
-        self._lifetime_window.width = 160
-        self._lifetime_window.height = 48
+        self._lifetime_window.width = 260
+        self._lifetime_window.height = 92
 
     @property
     def running(self) -> bool:
@@ -272,6 +388,8 @@ class PluginRuntime:
                 self._handle_connection(connection)
         if self._child is not None and self._child.poll() is not None:
             self._mset.err(f"DCC-MCP Marmoset adapter exited. See: {self.log_path}")
+            if self._status_label is not None:
+                self._status_label.text = "Adapter stopped · See log"
             self._child = None
 
     @property
@@ -282,6 +400,8 @@ class PluginRuntime:
         if self._stopped:
             return
         self._stopped = True
+        if self._status_label is not None:
+            self._status_label.text = "Stopped"
         if self._listener is not None:
             self._listener.close()
             self._listener = None
@@ -296,6 +416,7 @@ class PluginRuntime:
             self._log_handle.close()
             self._log_handle = None
         self._lifetime_window = None
+        self._status_label = None
 
     def _stop_from_ui(self) -> None:
         self.stop()
@@ -468,6 +589,33 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     return str(value)
+
+
+def _optional_call(target: Any, name: str) -> Any:
+    method = getattr(target, name, None)
+    return _json_value(method()) if callable(method) else None
+
+
+def _material_texture_paths(material: Any) -> list[Dict[str, str]]:
+    textures = []
+    for slot_name in (
+        "surface",
+        "microsurface",
+        "albedo",
+        "reflectivity",
+        "occlusion",
+        "emission",
+        "transparency",
+    ):
+        subroutine = material.getSubroutine(slot_name)
+        if subroutine is None:
+            continue
+        for field in subroutine.getFieldNames():
+            value = subroutine.getField(field)
+            path = getattr(value, "path", None)
+            if path:
+                textures.append({"slot": slot_name, "field": str(field), "path": str(path)})
+    return textures
 
 
 def _set_texture_map(

@@ -4,6 +4,7 @@ import json
 import socket
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -74,6 +75,37 @@ class FakeMaterial:
         assert self.subroutines[name].name == shader
 
 
+class FakePreferences:
+    displayTooltips = True
+    rayTraceBackend = "DXR"
+    defaultTangentMethod = "Mikk"
+
+
+class FakeLabel:
+    def __init__(self, text):
+        self.text = text
+
+
+class FakeButton:
+    def __init__(self, text):
+        self.text = text
+        self.onClick = None
+
+
+class FakeWindow:
+    def __init__(self, title):
+        self.title = title
+        self.elements = []
+        self.width = 0
+        self.height = 0
+
+    def addElement(self, element):
+        self.elements.append(element)
+
+    def addReturn(self):
+        self.elements.append(None)
+
+
 class FakeMset:
     def __init__(self, tmp_path: Path):
         self.tmp_path = tmp_path
@@ -81,6 +113,11 @@ class FakeMset:
         self.child = FakeObject(2, "Mesh", self.root)
         self.call_thread = None
         self.logs = []
+        self.materials = [FakeMaterial("Existing")]
+        self.preferences = FakePreferences()
+        self.framed = None
+        self.resources_freed = False
+        self.callbacks = SimpleNamespace(onPeriodicUpdate=None, onShutdownPlugin=None)
 
     def log(self, message):
         self.logs.append(message)
@@ -104,19 +141,61 @@ class FakeMset:
     def getSelectedObjects(self):
         return [self.child]
 
+    def setSelectedObjects(self, objects):
+        assert objects == [self.child]
+        return True
+
+    def frameObject(self, item):
+        self.framed = item
+
+    def frameScene(self):
+        self.framed = "scene"
+
+    def getSceneBounds(self):
+        return [[-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]]
+
+    def getCamera(self):
+        return self.child
+
+    def getTraceBackendType(self):
+        return "DXR"
+
+    def getOptimalTraceBackendType(self):
+        return "DXR"
+
+    def getPreferences(self):
+        return self.preferences
+
+    def getAllMaterials(self):
+        return self.materials
+
+    def freeUnusedResources(self):
+        self.resources_freed = True
+
     def importModel(self, path):
         assert Path(path).is_file()
         return self.child
 
     def importMaterial(self, path, name):
         assert Path(path).is_file()
-        return FakeMaterial(name)
+        material = FakeMaterial(name)
+        self.materials.append(material)
+        return material
 
     def saveScene(self, *_args):
         return None
 
     def renderCamera(self, path, *_args):
         Path(path).write_bytes(b"render")
+
+    def UIWindow(self, title):
+        return FakeWindow(title)
+
+    def UILabel(self, text):
+        return FakeLabel(text)
+
+    def UIButton(self, text):
+        return FakeButton(text)
 
 
 def test_commands_inspect_and_render_with_validation(tmp_path):
@@ -175,6 +254,68 @@ def test_set_visibility_validates_all_uids_before_mutating(tmp_path):
 
     result = commands.execute("scene.set_visibility", {"object_uids": ["2"], "visible": False})
     assert result["objects"][0]["visible"] is False
+
+
+def test_diagnostics_and_lookdev_commands(tmp_path):
+    fake = FakeMset(tmp_path)
+    commands = MarmosetCommands(fake)
+
+    runtime = commands.execute("diagnostics.inspect_runtime", {})
+    assert runtime["trace_backend"] == "DXR"
+    assert runtime["preferences"]["display_tooltips"] is True
+    assert runtime["material_count"] == 1
+    assert runtime["tooltip_database"]["available"] is False
+
+    materials = commands.execute("material.inspect", {"max_materials": 10})
+    assert materials["materials"][0]["name"] == "Existing"
+
+    assets = commands.execute("diagnostics.validate_assets", {"max_materials": 10})
+    assert assets["checked_texture_count"] == 5
+    assert assets["missing_texture_count"] == 5
+
+    framed = commands.execute("scene.frame", {"object_uid": "2"})
+    assert framed["object"]["name"] == "Mesh"
+    assert fake.framed is fake.child
+
+    assert commands.execute("diagnostics.set_display_tooltips", {"enabled": False}) == {
+        "display_tooltips": False
+    }
+    assert commands.execute("diagnostics.free_unused_resources", {}) == {"status": "completed"}
+    assert fake.resources_freed is True
+
+
+def test_runtime_window_is_useful_and_compact(monkeypatch, tmp_path):
+    fake = FakeMset(tmp_path)
+    runtime = PluginRuntime(fake, tmp_path)
+
+    class FakeProcess:
+        returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout):
+            return self.returncode
+
+    monkeypatch.setattr(
+        runtime, "_start_child", lambda _port: setattr(runtime, "_child", FakeProcess())
+    )
+    try:
+        runtime.start()
+        window = runtime._lifetime_window
+        assert window.title == "DCC-MCP · Marmoset"
+        assert [item.text for item in window.elements if item is not None] == [
+            "Connected · Agent ready",
+            "Toolbag 5022 · 127.0.0.1:" + str(runtime._listener.getsockname()[1]),
+            "Stop",
+        ]
+        assert window.width == 260
+        assert window.height == 92
+    finally:
+        runtime.stop()
 
 
 def test_runtime_polls_host_calls_on_the_main_thread(tmp_path):

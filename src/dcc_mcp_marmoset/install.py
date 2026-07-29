@@ -7,6 +7,9 @@ import shutil
 import sys
 from pathlib import Path
 
+PLUGIN_NAME = "DCC-MCP"
+LEGACY_PLUGIN_NAME = "dcc_mcp_marmoset"
+
 
 def install_plugin(plugin_dir: Path, *, overwrite: bool = False) -> Path:
     """Copy the bundled plugin and bind it to this environment's server executable."""
@@ -15,11 +18,13 @@ def install_plugin(plugin_dir: Path, *, overwrite: bool = False) -> Path:
         raise ValueError(f"Toolbag user plugin folder does not exist: {root}")
 
     source = Path(__file__).resolve().parent / "toolbag_plugin"
-    target = root / "dcc_mcp_marmoset"
-    if target.exists():
+    target = root / PLUGIN_NAME
+    existing = [path for path in (target, root / LEGACY_PLUGIN_NAME) if path.exists()]
+    if existing:
         if not overwrite:
-            raise FileExistsError(f"Plugin already exists: {target}")
-        shutil.rmtree(target)
+            raise FileExistsError(f"Plugin already exists: {existing[0]}")
+        for path in existing:
+            shutil.rmtree(path)
     shutil.copytree(
         source,
         target,
