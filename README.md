@@ -9,6 +9,15 @@ Toolbag plugin executes `mset` calls on `mset.callbacks.onPeriodicUpdate`; an
 external `DccServerBase` process owns MCP, discovery, jobs, and gateway
 registration.
 
+## Showcase
+
+![DCC-MCP Marmoset CC0 PBR lookdev](docs/images/dcc-mcp-marmoset-showcase.webp)
+
+The adapter reconstructed Poly Haven's **Dirty Football** in a live Toolbag
+5.02 session: FBX import, explicit Albedo/Normal/Roughness/Metalness/Occlusion
+assignment, exact-object framing, missing-reference validation, scene save, and
+1920x1080 camera render. See the [source and validation record](docs/showcase/dirty-football.md).
+
 ## Install
 
 ```powershell
@@ -22,11 +31,12 @@ folder path, then run:
 dcc-mcp-marmoset-install --plugin-dir "C:\path\shown\by\Toolbag"
 ```
 
-Choose **Edit > Plugins > Refresh**, then launch **dcc_mcp_marmoset**. The
+Choose **Edit > Plugins > Refresh**, then launch **DCC-MCP**. The
 plugin starts one host-bound adapter process per Toolbag process; relaunching
 the plugin reuses that runtime. Toolbag requires one visible plugin window to
-keep callbacks alive, so the adapter uses a single compact `DCC-MCP` lifetime
-window. Closing it stops the plugin. See [install.md](install.md) for details.
+keep callbacks alive, so the adapter uses one compact status window with the
+connection state, Toolbag version, loopback port, and stop control. Closing it
+stops the plugin. See [install.md](install.md) for details.
 
 ## Agent workflow
 
@@ -44,6 +54,14 @@ dcc-mcp-cli call <tool-slug> --json '{"max_objects":500}'
 Use the exact slugs returned by `search`. IDE-only clients may connect to the
 gateway MCP endpoint at `http://127.0.0.1:9765/mcp`.
 
+## Bundled Skills
+
+- `marmoset-scene` — inspect/import/save scenes, assign explicit PBR maps, control visibility,
+  and render cameras.
+- `marmoset-lookdev` — inspect material slots and frame a hero object or the whole scene.
+- `marmoset-diagnostics` — inspect GPU/renderer/preferences, find missing textures, release
+  unused resources, inspect tooltip database availability, and control tooltip display.
+
 ## Typed tools
 
 - `marmoset_scene__ping`
@@ -53,6 +71,12 @@ gateway MCP endpoint at `http://127.0.0.1:9765/mcp`.
 - `marmoset_scene__set_visibility`
 - `marmoset_scene__save_scene`
 - `marmoset_scene__render_camera`
+- `marmoset_lookdev__inspect_materials`
+- `marmoset_lookdev__frame_subject`
+- `marmoset_diagnostics__inspect_runtime`
+- `marmoset_diagnostics__validate_assets`
+- `marmoset_diagnostics__set_display_tooltips`
+- `marmoset_diagnostics__free_unused_resources`
 
 The adapter deliberately exposes no arbitrary Python execution. Its bridge is
 loopback-only, uses a per-launch random token, caps messages at 1 MiB, and
