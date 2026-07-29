@@ -7,7 +7,8 @@ def test_install_copies_plugin_and_records_server_path(tmp_path, monkeypatch):
     environment = tmp_path / "environment"
     environment.mkdir()
     python = environment / "python.exe"
-    server = environment / "dcc-mcp-marmoset.exe"
+    server_name = "dcc-mcp-marmoset.exe" if install.sys.platform == "win32" else "dcc-mcp-marmoset"
+    server = environment / server_name
     python.write_bytes(b"")
     server.write_bytes(b"")
     plugin_dir = tmp_path / "plugins"
@@ -25,7 +26,8 @@ def test_install_refuses_to_overwrite_existing_plugin(tmp_path, monkeypatch):
     environment = tmp_path / "environment"
     environment.mkdir()
     python = environment / "python.exe"
-    (environment / "dcc-mcp-marmoset.exe").write_bytes(b"")
+    server_name = "dcc-mcp-marmoset.exe" if install.sys.platform == "win32" else "dcc-mcp-marmoset"
+    (environment / server_name).write_bytes(b"")
     plugin_dir = tmp_path / "plugins"
     (plugin_dir / "dcc_mcp_marmoset").mkdir(parents=True)
     monkeypatch.setattr(install.sys, "executable", str(python))
