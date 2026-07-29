@@ -1,0 +1,34 @@
+import pytest
+
+from dcc_mcp_marmoset import install
+
+
+def test_install_copies_plugin_and_records_server_path(tmp_path, monkeypatch):
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    python = environment / "python.exe"
+    server = environment / "dcc-mcp-marmoset.exe"
+    python.write_bytes(b"")
+    server.write_bytes(b"")
+    plugin_dir = tmp_path / "plugins"
+    plugin_dir.mkdir()
+    monkeypatch.setattr(install.sys, "executable", str(python))
+
+    target = install.install_plugin(plugin_dir)
+
+    assert (target / "__main__.py").is_file()
+    assert (target / "_runtime.py").is_file()
+    assert (target / "server_path.txt").read_text(encoding="utf-8") == str(server.resolve())
+
+
+def test_install_refuses_to_overwrite_existing_plugin(tmp_path, monkeypatch):
+    environment = tmp_path / "environment"
+    environment.mkdir()
+    python = environment / "python.exe"
+    (environment / "dcc-mcp-marmoset.exe").write_bytes(b"")
+    plugin_dir = tmp_path / "plugins"
+    (plugin_dir / "dcc_mcp_marmoset").mkdir(parents=True)
+    monkeypatch.setattr(install.sys, "executable", str(python))
+
+    with pytest.raises(FileExistsError):
+        install.install_plugin(plugin_dir)

@@ -1,0 +1,71 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dcc-mcp-marmoset"
+version = "0.1.0"
+description = "Marmoset Toolbag adapter and typed scene/rendering skills for DCC-MCP"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "loonghao", email = "hal.long@outlook.com" }]
+keywords = ["marmoset", "toolbag", "mcp", "dcc", "rendering", "model-context-protocol"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Multimedia :: Graphics :: 3D Rendering",
+]
+dependencies = ["dcc-mcp-core>=0.19.86,<1.0.0"]
+
+[project.urls]
+Homepage = "https://github.com/dcc-mcp/dcc-mcp-marmoset"
+Repository = "https://github.com/dcc-mcp/dcc-mcp-marmoset"
+Issues = "https://github.com/dcc-mcp/dcc-mcp-marmoset/issues"
+
+[project.optional-dependencies]
+dev = ["build>=1.2", "pytest>=8", "ruff>=0.8", "twine>=6"]
+
+[project.scripts]
+dcc-mcp-marmoset = "dcc_mcp_marmoset.server:main"
+dcc-mcp-marmoset-install = "dcc_mcp_marmoset.install:main"
+
+[project.entry-points."dcc_mcp.adapters"]
+marmoset = "dcc_mcp_marmoset:MarmosetMcpServer"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dcc_mcp_marmoset"]
+artifacts = [
+  "src/dcc_mcp_marmoset/skills/**",
+  "src/dcc_mcp_marmoset/toolbag_plugin/**",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/dcc_mcp_marmoset",
+  "tests",
+  "tools",
+  "docs",
+  "README.md",
+  "install.md",
+  "LICENSE",
+  "release-please-config.json",
+  ".release-please-manifest.json",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "."]
+
+[tool.ruff]
+target-version = "py39"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+
