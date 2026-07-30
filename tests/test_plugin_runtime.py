@@ -21,6 +21,11 @@ class FakeObject:
         self.locked = False
 
 
+class FakePostEffect:
+    toneMappingMode = "linear"
+    exposure = 1.0
+
+
 class FakeTexture:
     sRGB = True
 
@@ -111,13 +116,18 @@ class FakeMset:
         self.tmp_path = tmp_path
         self.root = FakeObject(1, "Root")
         self.child = FakeObject(2, "Mesh", self.root)
+        self.child.postEffect = FakePostEffect()
         self.call_thread = None
         self.logs = []
         self.materials = [FakeMaterial("Existing")]
         self.preferences = FakePreferences()
         self.framed = None
         self.resources_freed = False
-        self.callbacks = SimpleNamespace(onPeriodicUpdate=None, onShutdownPlugin=None)
+        self.callbacks = SimpleNamespace(
+            onPeriodicUpdate=None,
+            onFrameUpdate=None,
+            onShutdownPlugin=None,
+        )
 
     def log(self, message):
         self.logs.append(message)
@@ -283,6 +293,14 @@ def test_diagnostics_and_lookdev_commands(tmp_path):
     assert commands.execute("diagnostics.free_unused_resources", {}) == {"status": "completed"}
     assert fake.resources_freed is True
 
+    output = commands.execute(
+        "camera.configure_color_output",
+        {"tone_mapping": "aces", "exposure": 1.25},
+    )
+    assert output["tone_mapping"] == "aces"
+    assert output["exposure"] == 1.25
+    assert output["ocio_supported"] is False
+
 
 def test_runtime_window_is_useful_and_compact(monkeypatch, tmp_path):
     fake = FakeMset(tmp_path)
@@ -314,6 +332,7 @@ def test_runtime_window_is_useful_and_compact(monkeypatch, tmp_path):
         ]
         assert window.width == 260
         assert window.height == 92
+        assert fake.callbacks.onFrameUpdate == runtime.poll
     finally:
         runtime.stop()
 

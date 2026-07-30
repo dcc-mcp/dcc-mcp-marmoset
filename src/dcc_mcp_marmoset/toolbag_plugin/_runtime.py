@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import json
+import math
 import os
 import secrets
 import socket
@@ -33,6 +34,7 @@ class MarmosetCommands:
             "scene.import_model": self._import_model,
             "scene.set_visibility": self._set_visibility,
             "scene.frame": self._frame_scene,
+            "camera.configure_color_output": self._configure_color_output,
             "material.create_pbr": self._create_pbr_material,
             "material.inspect": self._inspect_materials,
             "scene.save": self._save_scene,
@@ -186,6 +188,31 @@ class MarmosetCommands:
         self._mset.setSelectedObjects([target])
         self._mset.frameObject(target)
         return {"framed": "object", "object": _object_summary(target)}
+
+    def _configure_color_output(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        _require_keys(params, {"tone_mapping", "exposure"})
+        tone_mapping = str(params.get("tone_mapping") or "").strip().lower()
+        if tone_mapping not in {"linear", "reinhard", "hejl", "aces"}:
+            raise ValueError("tone_mapping must be linear, reinhard, hejl, or aces")
+        exposure = params.get("exposure", 1.0)
+        if isinstance(exposure, bool) or not isinstance(exposure, (int, float)):
+            raise ValueError("exposure must be a finite number")
+        exposure = float(exposure)
+        if not math.isfinite(exposure) or not 0.01 <= exposure <= 32.0:
+            raise ValueError("exposure must be between 0.01 and 32.0")
+        camera = self._mset.getCamera()
+        if camera is None:
+            raise RuntimeError("Toolbag has no active camera")
+        post_effect = camera.postEffect
+        post_effect.toneMappingMode = tone_mapping
+        post_effect.exposure = exposure
+        return {
+            "camera": _object_summary(camera),
+            "tone_mapping": str(post_effect.toneMappingMode),
+            "exposure": float(post_effect.exposure),
+            "color_pipeline": "tone-mapper-only",
+            "ocio_supported": False,
+        }
 
     def _inspect_materials(self, params: Dict[str, Any]) -> Dict[str, Any]:
         _require_keys(params, {"max_materials"})
@@ -353,6 +380,7 @@ class PluginRuntime:
         port = listener.getsockname()[1]
         self._start_child(port)
         self._mset.callbacks.onPeriodicUpdate = self._poll_callback
+        self._mset.callbacks.onFrameUpdate = self._poll_callback
         self._mset.callbacks.onShutdownPlugin = self._shutdown_callback
         self._lifetime_window = self._mset.UIWindow("DCC-MCP · Marmoset")
         self._status_label = self._mset.UILabel("Connected · Agent ready")

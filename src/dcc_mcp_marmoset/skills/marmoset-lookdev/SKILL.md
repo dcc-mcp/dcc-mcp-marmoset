@@ -22,3 +22,7 @@ metadata:
 
 Inspect material bindings first. Frame by exact object UID when preparing a
 hero asset; omit the UID only when the full scene should determine the camera.
+
+`configure_color_output` can select Toolbag's ACES tone mapper for visual
+comparison. Toolbag does not expose an OCIO/ACEScg transform API, so this is
+an output-boundary check rather than an OCIO-managed production workflow.
