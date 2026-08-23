@@ -24,11 +24,19 @@ assignment, exact-object framing, missing-reference validation, scene save, and
 python -m pip install dcc-mcp-marmoset
 ```
 
-In Toolbag, choose **Edit > Plugins > Show User Plugin Folder**, copy that
-folder path, then run:
+In Toolbag, choose **Edit > Plugins > Show User Plugin Folder** and copy that
+folder path. Review a non-mutating install plan with the exact Toolbag binary,
+external interpreter, and copied plugin folder, then execute it:
 
 ```powershell
-dcc-mcp-marmoset-install --plugin-dir "C:\path\shown\by\Toolbag"
+dcc-mcp-marmoset install --json --dry-run `
+  --dcc-path "C:\absolute\path\to\toolbag.exe" `
+  --python "$((Get-Command python).Source)" `
+  --plugin-dir "C:\path\shown\by\Toolbag"
+dcc-mcp-marmoset install --json --yes `
+  --dcc-path "C:\absolute\path\to\toolbag.exe" `
+  --python "$((Get-Command python).Source)" `
+  --plugin-dir "C:\path\shown\by\Toolbag"
 ```
 
 Choose **Edit > Plugins > Refresh**, then launch **DCC-MCP**. The
@@ -36,7 +44,9 @@ plugin starts one host-bound adapter process per Toolbag process; relaunching
 the plugin reuses that runtime. Toolbag requires one visible plugin window to
 keep callbacks alive, so the adapter uses one compact status window with the
 connection state, Toolbag version, loopback port, and stop control. Closing it
-stops the plugin. See [install.md](install.md) for details.
+stops the plugin. Run `dcc-mcp-marmoset verify --json` to prove the typed bridge
+ping; installed files alone are not readiness. See [install.md](install.md) for
+status, upgrade, receipt-driven uninstall, rollback, and troubleshooting.
 
 ## Agent workflow
 

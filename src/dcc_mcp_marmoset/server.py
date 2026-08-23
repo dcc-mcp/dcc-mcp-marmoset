@@ -194,7 +194,12 @@ def _parse_args(argv: Sequence[str]) -> argparse.Namespace:
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
     """Run until Toolbag exits or the service receives a stop signal."""
-    args = _parse_args(list(argv) if argv is not None else sys.argv[1:])
+    raw = list(argv) if argv is not None else sys.argv[1:]
+    if raw and raw[0] in {"install", "status", "verify", "uninstall", "upgrade"}:
+        from . import install
+
+        raise SystemExit(install.main(raw))
+    args = _parse_args(raw)
     if not 1 <= args.bridge_port <= 65535:
         raise SystemExit("--bridge-port must be between 1 and 65535")
     if args.host_pid <= 0:
