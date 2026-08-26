@@ -678,7 +678,8 @@ def test_probe_failure_redacts_credentials_and_local_paths(tmp_path, capsys, mon
     _assert_install_report_schema(report)
     rendered = json.dumps(report)
     assert "review-secret" not in rendered
-    assert "private" not in rendered
+    assert "workspace" not in rendered
+    assert "adapter.py" not in rendered
     assert len(report["message"]) <= install.MAX_PUBLIC_MESSAGE_CHARS
 
 
@@ -791,7 +792,7 @@ def test_bootstrap_diagnostic_is_redacted_before_verify_json(tmp_path, capsys, m
     _assert_install_report_schema(report)
     assert report["failure_reason"] == "bootstrap_error"
     assert secret not in rendered
-    assert "private" not in rendered
+    assert "host.py" not in rendered
 
 
 def test_unexpected_lifecycle_failure_still_emits_schema_shaped_json(tmp_path, capsys, monkeypatch):
