@@ -39,7 +39,7 @@ def test_version_metadata_is_synchronized():
     assert extra_files["uv.lock"] == {
         "type": "toml",
         "path": "uv.lock",
-        "jsonpath": "$.package[?(@.name=='dcc-mcp-marmoset')].version",
+        "jsonpath": "$.package[?(@.name.value=='dcc-mcp-marmoset')].version",
     }
 
 
@@ -51,7 +51,7 @@ def test_current_changelog_deduplicates_the_pr_2_showcase_entry():
     assert "https://github.com/dcc-mcp/dcc-mcp-marmoset/pull/2" in current_release
 
 
-def test_next_patch_version_regenerates_a_synchronized_lock(tmp_path):
+def test_release_please_next_patch_updates_every_version_surface(tmp_path):
     root = Path(__file__).parents[1]
     workflow = (root / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     assert "uv lock --check" in workflow
@@ -59,58 +59,108 @@ def test_next_patch_version_regenerates_a_synchronized_lock(tmp_path):
     major, minor, patch = (int(part) for part in __version__.split("."))
     next_version = f"{major}.{minor}.{patch + 1}"
     release_config = json.loads((root / "release-please-config.json").read_text(encoding="utf-8"))
-    generic_paths = {
-        item["path"]
-        for item in release_config["packages"]["."]["extra-files"]
-        if item["type"] == "generic"
-    }
-    assert generic_paths == {
-        "src/dcc_mcp_marmoset/__version__.py",
-        "src/dcc_mcp_marmoset/skills/marmoset-diagnostics/SKILL.md",
-        "src/dcc_mcp_marmoset/skills/marmoset-lookdev/SKILL.md",
-        "src/dcc_mcp_marmoset/skills/marmoset-scene/SKILL.md",
-    }
-    for generic_path in generic_paths:
-        surface = (root / generic_path).read_text(encoding="utf-8")
-        marker_lines = [
-            line
-            for line in surface.splitlines()
-            if "x-release-please-version" in line and __version__ in line
-        ]
-        assert len(marker_lines) == 1
-        assert next_version in marker_lines[0].replace(__version__, next_version)
-
     project = tmp_path / "next-release"
-    project.mkdir()
-    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
-    assert '"uv==0.11.19"' in pyproject
-    current_version_line = f'version = "{__version__}"'
-    assert pyproject.count(current_version_line) == 1
-    (project / "pyproject.toml").write_text(
-        pyproject.replace(current_version_line, f'version = "{next_version}"'),
-        encoding="utf-8",
+    managed_paths = {
+        "release-please-config.json",
+        ".release-please-manifest.json",
+        "pyproject.toml",
+        *(item["path"] for item in release_config["packages"]["."]["extra-files"]),
+    }
+    for relative_path in managed_paths:
+        destination = project / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(root / relative_path, destination)
+
+    release_please_root_env = os.environ.get("RELEASE_PLEASE_17_3_0_ROOT")
+    if release_please_root_env:
+        release_please_root = Path(release_please_root_env).resolve()
+    else:
+        npm = shutil.which("npm")
+        assert npm is not None
+        runner = tmp_path / "release-please-runner"
+        installed = subprocess.run(
+            [
+                npm,
+                "install",
+                "--prefix",
+                str(runner),
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+                "release-please@17.3.0",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert installed.returncode == 0, installed.stderr
+        release_please_root = runner / "node_modules" / "release-please"
+
+    release_please_package = json.loads(
+        (release_please_root / "package.json").read_text(encoding="utf-8")
     )
-    shutil.copy2(root / "uv.lock", project / "uv.lock")
+    assert release_please_package["version"] == "17.3.0"
+    node = shutil.which("node")
+    assert node is not None
+    replay = subprocess.run(
+        [
+            node,
+            str(root / "tools" / "replay_release_please.cjs"),
+            str(release_please_root),
+            str(project),
+            next_version,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert replay.returncode == 0, replay.stderr
+    replay_report = json.loads(replay.stdout)
 
     uv = shutil.which("uv")
     assert uv is not None
-    env = os.environ.copy()
-    env["UV_CACHE_DIR"] = str(tmp_path / "isolated-uv-cache")
-    completed = subprocess.run(
-        [uv, "lock", "--directory", str(project)],
+    lock_check = subprocess.run(
+        [uv, "lock", "--check", "--directory", str(project)],
         check=False,
         capture_output=True,
-        env=env,
         text=True,
     )
-    assert completed.returncode == 0, completed.stderr
-    regenerated_lock = (project / "uv.lock").read_text(encoding="utf-8")
+
+    pyproject = (project / "pyproject.toml").read_text(encoding="utf-8")
+    manifest = json.loads((project / ".release-please-manifest.json").read_text(encoding="utf-8"))
+    runtime = (project / "src" / "dcc_mcp_marmoset" / "__version__.py").read_text(encoding="utf-8")
+    skill_versions = {}
+    for name in ("marmoset-diagnostics", "marmoset-lookdev", "marmoset-scene"):
+        skill = (project / "src" / "dcc_mcp_marmoset" / "skills" / name / "SKILL.md").read_text(
+            encoding="utf-8"
+        )
+        match = re.search(r'^    version: "([^"]+)"', skill, re.MULTILINE)
+        assert match is not None
+        skill_versions[name] = match.group(1)
+    lock = (project / "uv.lock").read_text(encoding="utf-8")
     lock_package = re.search(
         r'\[\[package\]\]\nname = "dcc-mcp-marmoset"\nversion = "([^"]+)"',
-        regenerated_lock,
+        lock,
     )
     assert lock_package is not None
-    assert lock_package.group(1) == next_version
+
+    observed_versions = {
+        "manifest": manifest["."],
+        "pyproject": re.search(r'^version = "([^"]+)"', pyproject, re.MULTILINE).group(1),
+        "runtime": re.search(r'__version__ = "([^"]+)"', runtime).group(1),
+        "uv.lock": lock_package.group(1),
+        **skill_versions,
+    }
+    failures = []
+    if replay_report["warnings"]:
+        failures.append(f"release-please warnings: {replay_report['warnings']}")
+    if replay_report["errors"]:
+        failures.append(f"release-please errors: {replay_report['errors']}")
+    if set(observed_versions.values()) != {next_version}:
+        failures.append(f"version surfaces: {observed_versions}")
+    if lock_check.returncode != 0:
+        failures.append(f"uv lock --check: {lock_check.stderr.strip()}")
+    assert not failures, "\n".join(failures)
 
 
 def test_bundled_plugin_and_skill_exist():
