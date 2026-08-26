@@ -67,6 +67,10 @@ _SECRET_RE = re.compile(
 _WINDOWS_PATH_RE = re.compile(r"(?i)(?:[a-z]:[\\/]|\\\\)[^\r\n\t\"']+")
 _POSIX_PATH_RE = re.compile(r"(?<![A-Za-z0-9])/(?:[^\s/]+/)*[^\s,;:\"']+")
 
+_PathIdentity = tuple[int, int, int, int, int]
+_OwnedFileSnapshot = tuple[str, str, _PathIdentity]
+_OwnedTargetSnapshot = tuple[_PathIdentity, tuple[_OwnedFileSnapshot, ...]]
+
 
 def load_install_sop_schema() -> dict[str, Any]:
     """Load the published Core Install SOP schema."""
@@ -161,7 +165,7 @@ def _is_link_or_reparse(path: Path) -> bool:
     )
 
 
-def _path_identity(path: Path) -> Optional[tuple[int, int, int, int, int]]:
+def _path_identity(path: Path) -> Optional[_PathIdentity]:
     try:
         metadata = os.lstat(path)
     except OSError:
@@ -918,11 +922,8 @@ def _rollback_replace(
     target_backup: Path,
     legacy: Path,
     legacy_backup: Path,
-    receipt_path: Optional[Path],
-    receipt_backup: Optional[Path],
     *,
     stage_committed: bool,
-    receipt_committed: bool,
 ) -> list[str]:
     failures = []
     try:
@@ -937,14 +938,6 @@ def _rollback_replace(
             _replace_path(legacy_backup, legacy)
     except OSError as exc:
         failures.append(f"legacy: {exc}")
-    if receipt_path is not None and receipt_backup is not None:
-        try:
-            if receipt_committed and receipt_path.exists():
-                receipt_path.unlink()
-            if receipt_backup.exists():
-                _replace_path(receipt_backup, receipt_path)
-        except OSError as exc:
-            failures.append(f"receipt: {exc}")
     return failures
 
 
@@ -954,7 +947,8 @@ def _install_transaction(
     *,
     receipt_path: Optional[Path],
     receipt_values: Optional[dict[str, Any]],
-    expected_target_identity: Optional[tuple[int, int, int, int, int]] = None,
+    expected_receipt: Optional[dict[str, Any]] = None,
+    expected_target_snapshot: Optional[_OwnedTargetSnapshot] = None,
 ) -> tuple[Path, list[dict[str, Any]]]:
     source = Path(__file__).resolve().parent / "toolbag_plugin"
     target = plugin_root / PLUGIN_NAME
@@ -964,9 +958,7 @@ def _install_transaction(
     target_backup = plugin_root / f".{PLUGIN_NAME}.backup-{token}"
     legacy_backup = plugin_root / f".{LEGACY_PLUGIN_NAME}.backup-{token}"
     receipt_stage: Optional[Path] = None
-    receipt_backup: Optional[Path] = None
     stage_committed = False
-    receipt_committed = False
     try:
         shutil.copytree(source, stage, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         (stage / "server_path.txt").write_text(str(server_path.resolve()), encoding="utf-8")
@@ -975,7 +967,6 @@ def _install_transaction(
         if receipt_path is not None and receipt_values is not None:
             receipt_path.parent.mkdir(parents=True, exist_ok=True)
             receipt_stage = receipt_path.with_name(f".{receipt_path.name}.stage-{token}")
-            receipt_backup = receipt_path.with_name(f".{receipt_path.name}.backup-{token}")
             receipt_values["installed_files"] = _manifest(stage)
             receipt_values["pending_cleanup"] = []
             _write_json_file(receipt_stage, receipt_values)
@@ -991,26 +982,26 @@ def _install_transaction(
         ) from exc
     try:
         if target.exists():
-            if (
-                expected_target_identity is not None
-                and _path_identity(target) != expected_target_identity
-            ):
+            identity_failure = (
+                _revalidate_target_snapshot(expected_receipt, target, expected_target_snapshot)
+                if expected_receipt is not None and expected_target_snapshot is not None
+                else None
+            )
+            if identity_failure is not None:
                 raise LifecycleError(
                     EXIT_PREFLIGHT,
                     "preflight",
-                    "install_identity_changed",
-                    "The installed plugin identity changed immediately before replacement.",
+                    identity_failure["reason"],
+                    "The installed plugin changed immediately before replacement.",
+                    details=identity_failure,
                 )
             _replace_path(target, target_backup)
         if legacy.exists():
             _replace_path(legacy, legacy_backup)
         _replace_path(stage, target)
         stage_committed = True
-        if receipt_path is not None and receipt_stage is not None and receipt_backup is not None:
-            if receipt_path.exists():
-                _replace_path(receipt_path, receipt_backup)
+        if receipt_path is not None and receipt_stage is not None:
             _replace_path(receipt_stage, receipt_path)
-            receipt_committed = True
     except LifecycleError:
         shutil.rmtree(stage, ignore_errors=True)
         if receipt_stage is not None:
@@ -1022,10 +1013,7 @@ def _install_transaction(
             target_backup,
             legacy,
             legacy_backup,
-            receipt_path,
-            receipt_backup,
             stage_committed=stage_committed,
-            receipt_committed=receipt_committed,
         )
         shutil.rmtree(stage, ignore_errors=True)
         if receipt_stage is not None:
@@ -1053,21 +1041,8 @@ def _install_transaction(
             failure = _remove_generated_tree(backup, plugin_root, "install_cleanup")
             if failure:
                 cleanup_failures.append(failure)
-    if receipt_backup is not None and receipt_backup.exists():
-        try:
-            receipt_backup.unlink()
-        except OSError as exc:
-            cleanup_failures.append(
-                {
-                    "path": str(receipt_backup),
-                    "operation": "receipt_cleanup",
-                    "reason": "windows_file_lock" if _is_windows_lock(exc) else "cleanup_failed",
-                    "requires_restart": _is_windows_lock(exc),
-                }
-            )
     if cleanup_failures and receipt_path is not None and receipt_values is not None:
-        tracked = [item for item in cleanup_failures if item.get("operation") != "receipt_cleanup"]
-        receipt_values["pending_cleanup"] = tracked
+        receipt_values["pending_cleanup"] = cleanup_failures
         _atomic_write_json_file(receipt_path, receipt_values)
     return target, cleanup_failures
 
@@ -1137,14 +1112,49 @@ def _validate_manifest(receipt: dict[str, Any], target: Path) -> Optional[dict[s
 
 def _validated_target_identity(
     receipt: dict[str, Any], target: Path
-) -> tuple[Optional[dict[str, str]], Optional[tuple[int, int, int, int, int]]]:
+) -> tuple[Optional[dict[str, str]], Optional[_OwnedTargetSnapshot]]:
     before = _path_identity(target)
     if before is None or _is_link_or_reparse(target) or not target.is_dir():
-        return {"reason": "installed_path_unsafe", "path": str(target)}, before
+        return {"reason": "installed_path_unsafe", "path": str(target)}, None
     failure = _validate_manifest(receipt, target)
     if _path_identity(target) != before:
-        return {"reason": "install_identity_changed", "path": str(target)}, before
-    return failure, before
+        return {"reason": "install_identity_changed", "path": str(target)}, None
+    if failure is not None:
+        return failure, None
+    files: list[_OwnedFileSnapshot] = []
+    for item in receipt["installed_files"]:
+        relative = item["path"]
+        candidate = target.joinpath(*PurePosixPath(relative).parts)
+        identity = _path_identity(candidate)
+        if identity is None or _is_link_or_reparse(candidate) or not candidate.is_file():
+            return {"reason": "installed_path_unsafe", "path": str(candidate)}, None
+        try:
+            digest = _sha256(candidate)
+        except OSError:
+            return {"reason": "installed_path_unsafe", "path": str(candidate)}, None
+        if _path_identity(candidate) != identity:
+            return {"reason": "install_identity_changed", "path": str(candidate)}, None
+        if digest != item["sha256"]:
+            return {"reason": "installed_file_digest_mismatch", "path": str(candidate)}, None
+        files.append((relative, digest, identity))
+    if _path_identity(target) != before:
+        return {"reason": "install_identity_changed", "path": str(target)}, None
+    return None, (before, tuple(files))
+
+
+def _revalidate_target_snapshot(
+    receipt: Optional[dict[str, Any]],
+    target: Path,
+    expected: Optional[_OwnedTargetSnapshot],
+) -> Optional[dict[str, str]]:
+    if receipt is None or expected is None:
+        return {"reason": "install_identity_changed", "path": str(target)}
+    failure, observed = _validated_target_identity(receipt, target)
+    if failure is not None:
+        return failure
+    if observed != expected:
+        return {"reason": "install_identity_changed", "path": str(target)}
+    return None
 
 
 def _verify_install(
@@ -1281,9 +1291,9 @@ def _handle_install(args: argparse.Namespace, *, upgrade: bool) -> tuple[dict[st
         python_probe = _probe_python(python, failure_code=EXIT_PREFLIGHT)
         report["core_version"] = python_probe["core_version"]
         target = plugin_root / PLUGIN_NAME
-        expected_target_identity = None
+        expected_target_snapshot = None
         if receipt is not None and target.exists():
-            manifest_failure, expected_target_identity = _validated_target_identity(receipt, target)
+            manifest_failure, expected_target_snapshot = _validated_target_identity(receipt, target)
             if manifest_failure:
                 raise LifecycleError(
                     EXIT_PREFLIGHT,
@@ -1297,7 +1307,7 @@ def _handle_install(args: argparse.Namespace, *, upgrade: bool) -> tuple[dict[st
                 plugin_root,
                 receipt_path,
                 receipt,
-                include_orphans=expected_target_identity is not None,
+                include_orphans=expected_target_snapshot is not None,
             )
             if cleanup_failures:
                 requires_restart = any(item.get("requires_restart") for item in cleanup_failures)
@@ -1316,7 +1326,7 @@ def _handle_install(args: argparse.Namespace, *, upgrade: bool) -> tuple[dict[st
                 return report, EXIT_REQUIRES_RESTART if requires_restart else EXIT_INSTALL
             if finalized_uninstall:
                 receipt = None
-                expected_target_identity = None
+                expected_target_snapshot = None
         install_state = _state(receipt, plugin_root)
         plan_type = (
             "upgrade"
@@ -1361,7 +1371,8 @@ def _handle_install(args: argparse.Namespace, *, upgrade: bool) -> tuple[dict[st
             Path(python_probe["server_path"]),
             receipt_path=receipt_path,
             receipt_values=receipt_values,
-            expected_target_identity=expected_target_identity,
+            expected_receipt=receipt,
+            expected_target_snapshot=expected_target_snapshot,
         )
         report["steps"][1]["status"] = "ok"
         report["steps"][2]["status"] = "ok"
@@ -1645,7 +1656,7 @@ def _handle_uninstall(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "receipt_target_missing",
                 f"The receipted plugin target is missing: {target}",
             )
-        manifest_failure, target_identity = _validated_target_identity(receipt, target)
+        manifest_failure, target_snapshot = _validated_target_identity(receipt, target)
         if manifest_failure:
             raise LifecycleError(
                 EXIT_PREFLIGHT,
@@ -1654,7 +1665,7 @@ def _handle_uninstall(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "Uninstall refuses a plugin that does not match the exact receipted owned set.",
                 details=manifest_failure,
             )
-        assert target_identity is not None
+        assert target_snapshot is not None
         report.update({"plugin_root": str(plugin_root), "target_path": str(target)})
         report["steps"] = [
             {"id": "receipt", "status": "ok"},
@@ -1677,13 +1688,15 @@ def _handle_uninstall(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "uninstall_stage_failed",
                 f"Could not stage a rollback copy before uninstall: {exc}",
             ) from exc
-        if _path_identity(target) != target_identity:
+        identity_failure = _revalidate_target_snapshot(receipt, target, target_snapshot)
+        if identity_failure is not None:
             shutil.rmtree(restore_copy, ignore_errors=True)
             raise LifecycleError(
                 EXIT_PREFLIGHT,
                 "preflight",
-                "install_identity_changed",
-                "The installed plugin identity changed immediately before uninstall.",
+                identity_failure["reason"],
+                "The installed plugin changed immediately before uninstall.",
+                details=identity_failure,
             )
         try:
             _replace_path(target, tombstone)
