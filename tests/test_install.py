@@ -592,6 +592,32 @@ def test_uninstall_rechecks_target_identity_immediately_before_move(tmp_path, ca
     assert original_target.is_dir()
 
 
+def test_uninstall_rechecks_owned_file_content_at_mutation_boundary(tmp_path, capsys, monkeypatch):
+    target, receipt_path = _install_receipted_fixture(tmp_path, capsys, monkeypatch)
+    entrypoint = target / "__main__.py"
+    original_copytree = install.shutil.copytree
+
+    def mutate_after_rollback_copy(source, destination, *args, **kwargs):
+        result = original_copytree(source, destination, *args, **kwargs)
+        candidate = install.Path(destination)
+        if install.Path(source) == target and ".restore-" in candidate.name:
+            entrypoint.write_text("USER_FOREIGN_DATA", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(install.shutil, "copytree", mutate_after_rollback_copy)
+
+    assert (
+        install.main(["uninstall", "--json", "--yes", "--receipt-path", str(receipt_path)])
+        == install.EXIT_PREFLIGHT
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["failure_reason"] == "installed_file_digest_mismatch"
+    assert entrypoint.read_text(encoding="utf-8") == "USER_FOREIGN_DATA"
+    assert receipt_path.is_file()
+    assert not list(target.parent.glob(".DCC-MCP.uninstall-*"))
+    assert not list(target.parent.glob(".DCC-MCP.restore-*"))
+
+
 def test_windows_cleanup_deferral_is_persisted_and_converges_on_retry(
     tmp_path, capsys, monkeypatch
 ):
@@ -651,6 +677,40 @@ def test_windows_cleanup_deferral_is_persisted_and_converges_on_retry(
     assert not list(plugin_root.glob(".*.backup-*"))
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     assert receipt.get("pending_cleanup") == []
+
+
+def test_receipt_replace_does_not_leave_an_untracked_locked_backup(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(install, "_windows_file_version", lambda _path: None)
+    monkeypatch.setattr(
+        install,
+        "_verify_install",
+        lambda _args, _receipt: (True, "ok", {"readiness": {"success": True}}),
+    )
+    args = _standard_args(tmp_path, "install", "--yes")
+    assert install.main(args) == install.EXIT_OK
+    capsys.readouterr()
+
+    receipt_path = tmp_path / "marmoset.json"
+    original_unlink = install.os.unlink
+
+    def deny_receipt_backup_removal(path, *args, **kwargs):
+        candidate = install.Path(path)
+        if candidate.name.startswith(f".{receipt_path.name}.backup-"):
+            raise PermissionError("simulated locked receipt backup")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(install.os, "unlink", deny_receipt_backup_removal)
+
+    assert install.main(args) == install.EXIT_OK
+    second = json.loads(capsys.readouterr().out)
+    assert second["status"] == "ok"
+    assert not list(tmp_path.glob(".marmoset.json.backup-*"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["pending_cleanup"] == []
+
+    assert install.main(args) == install.EXIT_OK
+    capsys.readouterr()
+    assert not list(tmp_path.glob(".marmoset.json.backup-*"))
 
 
 def test_probe_wrong_shape_returns_stable_json(tmp_path, capsys, monkeypatch):
