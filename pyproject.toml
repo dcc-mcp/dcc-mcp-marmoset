@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dcc-mcp-marmoset"
-version = "0.1.1"
+version = "0.1.2"
 description = "Marmoset Toolbag adapter and typed scene/rendering skills for DCC-MCP"
 readme = "README.md"
 requires-python = ">=3.9"
