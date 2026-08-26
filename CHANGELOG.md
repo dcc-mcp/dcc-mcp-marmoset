@@ -5,8 +5,7 @@
 
 ### Features
 
-* add Marmoset TA workflows and showcase ([b5e3a13](https://github.com/dcc-mcp/dcc-mcp-marmoset/commit/b5e3a13a350ee122d009d2a03a5dcfc7d8993eb1))
-* add Marmoset TA workflows and showcase ([f027baa](https://github.com/dcc-mcp/dcc-mcp-marmoset/commit/f027baad26fe33d1054989f55e78d50eef3fde55))
+* add Marmoset TA workflows and showcase ([#2](https://github.com/dcc-mcp/dcc-mcp-marmoset/pull/2))
 * add transactional marmoset install lifecycle ([a00c0d2](https://github.com/dcc-mcp/dcc-mcp-marmoset/commit/a00c0d2989ca3d182348011b14d686731a6c5b35))
 * configure camera color output ([47f82e3](https://github.com/dcc-mcp/dcc-mcp-marmoset/commit/47f82e327f6860b14fd6ca0f30de8dc3b361cdde))
 

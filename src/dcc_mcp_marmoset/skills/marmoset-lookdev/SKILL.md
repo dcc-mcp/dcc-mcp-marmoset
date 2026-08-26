@@ -11,7 +11,7 @@ metadata:
   dcc-mcp:
     dcc: marmoset
     layer: domain
-    version: "0.1.1"  # x-release-please-version
+    version: "0.1.2"  # x-release-please-version
     stage: lookdev
     search-hint: "Marmoset Toolbag lookdev frame object frame scene inspect PBR materials texture maps camera TA"
     tags: "marmoset,toolbag,lookdev,materials,camera,technical-art"

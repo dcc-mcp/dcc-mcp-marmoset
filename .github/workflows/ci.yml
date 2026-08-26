@@ -23,6 +23,7 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
       - run: python -m pip install -e ".[dev]"
+      - run: uv lock --check
       - run: python -m pytest
       - run: python -m ruff check src tests tools
       - run: python -m ruff format --check src tests tools
