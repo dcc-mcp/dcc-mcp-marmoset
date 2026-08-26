@@ -3,10 +3,26 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "file_edit": {
+      "allOf": [
+        {
+          "if": {
+            "properties": {"action": {"enum": ["create", "update"]}},
+            "required": ["action"]
+          },
+          "then": {"required": ["content"]}
+        },
+        {
+          "if": {
+            "properties": {"action": {"const": "remove"}},
+            "required": ["action"]
+          },
+          "then": {"not": {"required": ["content"]}}
+        }
+      ],
       "properties": {
         "action": {"enum": ["create", "update", "remove"], "type": "string"},
         "content": {"type": "string"},
-        "path": {"minLength": 1, "type": "string"}
+        "path": {"minLength": 1, "pattern": "\\S", "type": "string"}
       },
       "required": ["path", "action"],
       "type": "object"
@@ -14,7 +30,11 @@
     "next_step": {
       "oneOf": [{"required": ["command"]}, {"required": ["file_edit"]}],
       "properties": {
-        "command": {"items": {"type": "string"}, "minItems": 1, "type": "array"},
+        "command": {
+          "items": {"pattern": "\\S", "type": "string"},
+          "minItems": 1,
+          "type": "array"
+        },
         "description": {"minLength": 1, "type": "string"},
         "file_edit": {"$ref": "#/$defs/file_edit"},
         "id": {"minLength": 1, "type": "string"},
