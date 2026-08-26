@@ -15,6 +15,19 @@
         {
           "type": "generic",
           "path": "src/dcc_mcp_marmoset/skills/marmoset-scene/SKILL.md"
+        },
+        {
+          "type": "generic",
+          "path": "src/dcc_mcp_marmoset/skills/marmoset-diagnostics/SKILL.md"
+        },
+        {
+          "type": "generic",
+          "path": "src/dcc_mcp_marmoset/skills/marmoset-lookdev/SKILL.md"
+        },
+        {
+          "type": "toml",
+          "path": "uv.lock",
+          "jsonpath": "$.package[?(@.name=='dcc-mcp-marmoset')].version"
         }
       ]
     }

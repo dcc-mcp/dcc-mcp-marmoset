@@ -12,7 +12,7 @@ metadata:
   dcc-mcp:
     dcc: marmoset
     layer: domain
-    version: "0.1.1"  # x-release-please-version
+    version: "0.1.2"  # x-release-please-version
     stage: diagnostics
     search-hint: "Marmoset Toolbag diagnostics GPU renderer preferences missing textures assets VRAM tooltips TA debug"
     tags: "marmoset,toolbag,diagnostics,debugging,technical-art"

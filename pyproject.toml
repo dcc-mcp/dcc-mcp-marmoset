@@ -29,7 +29,14 @@ Repository = "https://github.com/dcc-mcp/dcc-mcp-marmoset"
 Issues = "https://github.com/dcc-mcp/dcc-mcp-marmoset/issues"
 
 [project.optional-dependencies]
-dev = ["build>=1.2", "jsonschema>=4.23,<5", "pytest>=8", "ruff>=0.8", "twine>=6"]
+dev = [
+  "build>=1.2",
+  "jsonschema>=4.23,<5",
+  "pytest>=8",
+  "ruff>=0.8",
+  "twine>=6",
+  "uv==0.11.19",
+]
 
 [project.scripts]
 dcc-mcp-marmoset = "dcc_mcp_marmoset.server:main"
