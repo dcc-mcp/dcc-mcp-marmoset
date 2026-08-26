@@ -11,7 +11,8 @@ https://raw.githubusercontent.com/dcc-mcp/dcc-mcp-marmoset/main/install.md
 
 - Marmoset Toolbag **4.03 through 4.x**, or **5.x**.
 - An external Python **3.9+** environment that owns `dcc-mcp-marmoset` and
-  `dcc-mcp-core`. Toolbag does not need those packages in its embedded Python.
+  `dcc-mcp-core>=0.20.14,<1.0.0`. Toolbag does not need those packages in its
+  embedded Python.
 - Permission to write Toolbag's per-user plugin folder and
   `~/.dcc-mcp/receipts/marmoset.json`.
 

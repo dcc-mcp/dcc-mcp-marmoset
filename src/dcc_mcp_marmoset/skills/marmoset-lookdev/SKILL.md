@@ -5,7 +5,7 @@ description: >-
   or an exact object for lookdev and render preparation. Use before material
   validation or camera rendering. Not for arbitrary Python execution.
 license: MIT
-compatibility: "Marmoset Toolbag 4.03+ or 5.x; Python 3.9+; dcc-mcp-core 0.19.86+"
+compatibility: "Marmoset Toolbag 4.03+ or 5.x; Python 3.9+; dcc-mcp-core 0.20.14+"
 allowed-tools: Python
 metadata:
   dcc-mcp:

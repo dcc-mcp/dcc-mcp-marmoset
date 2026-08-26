@@ -1,11 +1,35 @@
+import hashlib
 import json
+import os
 import runpy
 import sys
 import types
+from pathlib import Path
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from dcc_mcp_marmoset import install, server
+
+
+def _assert_install_report_schema(report):
+    Draft202012Validator(install.load_install_sop_schema()).validate(report)
+
+
+def _install_receipted_fixture(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(install, "_windows_file_version", lambda _path: None)
+    monkeypatch.setattr(
+        install,
+        "_verify_install",
+        lambda _args, _receipt: (True, "ok", {"readiness": {"success": True}}),
+    )
+    args = _standard_args(tmp_path, "install", "--yes")
+    assert install.main(args) == install.EXIT_OK
+    capsys.readouterr()
+    return (
+        tmp_path / "plugins" / install.PLUGIN_NAME,
+        tmp_path / "marmoset.json",
+    )
 
 
 def test_install_copies_plugin_and_records_server_path(tmp_path, monkeypatch):
@@ -266,6 +290,12 @@ def test_receipt_commit_failure_restores_previous_plugin_and_receipt(tmp_path, c
     marker = target / "previous-state.txt"
     marker.write_text("keep me", encoding="utf-8")
     receipt_path = tmp_path / "marmoset.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["installed_files"].append(
+        {"path": marker.name, "sha256": hashlib.sha256(marker.read_bytes()).hexdigest()}
+    )
+    receipt["installed_files"].sort(key=lambda item: item["path"].casefold())
+    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     previous_receipt = receipt_path.read_bytes()
     original_replace = install._replace_path
 
@@ -450,3 +480,331 @@ def test_install_documentation_covers_the_public_lifecycle():
         assert token in guide
     assert "dcc-mcp-marmoset install --json --dry-run" in readme
     assert "dcc-mcp-marmoset verify --json" in readme
+
+
+def test_status_rejects_foreign_files_in_a_receipted_plugin(tmp_path, capsys, monkeypatch):
+    target, receipt_path = _install_receipted_fixture(tmp_path, capsys, monkeypatch)
+    (target / "user-owned.txt").write_text("not installed by the adapter", encoding="utf-8")
+
+    assert install.main(["status", "--json", "--receipt-path", str(receipt_path)]) == 10
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "partial"
+    assert report["failure_reason"] == "installed_file_set_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("mutation", "reason"),
+    [
+        ("missing", "receipt_manifest_missing"),
+        ("stale", "installed_file_digest_mismatch"),
+    ],
+)
+def test_status_never_reports_installed_for_missing_or_stale_manifest(
+    tmp_path, capsys, monkeypatch, mutation, reason
+):
+    _target, receipt_path = _install_receipted_fixture(tmp_path, capsys, monkeypatch)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if mutation == "missing":
+        receipt.pop("installed_files")
+    else:
+        receipt["installed_files"][0]["sha256"] = "0" * 64
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    assert install.main(["status", "--json", "--receipt-path", str(receipt_path)]) == 10
+    report = json.loads(capsys.readouterr().out)
+    _assert_install_report_schema(report)
+    assert report["status"] != "ok"
+    assert report.get("install_state") != "installed"
+    assert report["failure_reason"] == reason
+
+
+def test_uninstall_refuses_stale_receipt_and_preserves_foreign_files(tmp_path, capsys, monkeypatch):
+    target, receipt_path = _install_receipted_fixture(tmp_path, capsys, monkeypatch)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt["installed_files"][0]["sha256"] = "0" * 64
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    foreign = target / "user-owned.txt"
+    foreign.write_text("not installed by the adapter", encoding="utf-8")
+
+    assert (
+        install.main(["uninstall", "--json", "--yes", "--receipt-path", str(receipt_path)])
+        == install.EXIT_PREFLIGHT
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["failure_reason"] in {
+        "installed_file_digest_mismatch",
+        "installed_file_set_mismatch",
+    }
+    assert target.is_dir()
+    assert foreign.read_text(encoding="utf-8") == "not installed by the adapter"
+    assert receipt_path.is_file()
+
+
+def test_receipt_rejects_duplicate_manifest_aliases(tmp_path, capsys, monkeypatch):
+    target, receipt_path = _install_receipted_fixture(tmp_path, capsys, monkeypatch)
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    duplicate = dict(receipt["installed_files"][0])
+    duplicate["path"] = duplicate["path"].upper()
+    receipt["installed_files"].append(duplicate)
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    assert install.main(["status", "--json", "--receipt-path", str(receipt_path)]) == 10
+    report = json.loads(capsys.readouterr().out)
+    assert report["failure_reason"] == "receipt_manifest_duplicate"
+    assert target.is_dir()
+
+
+def test_receipt_rejects_symlinked_plugin_entries(tmp_path, capsys, monkeypatch):
+    target, receipt_path = _install_receipted_fixture(tmp_path, capsys, monkeypatch)
+    external = tmp_path / "external.txt"
+    external.write_text("foreign", encoding="utf-8")
+    os.symlink(external, target / "linked.txt")
+
+    assert install.main(["status", "--json", "--receipt-path", str(receipt_path)]) == 10
+    report = json.loads(capsys.readouterr().out)
+    assert report["failure_reason"] == "installed_path_unsafe"
+    assert external.read_text(encoding="utf-8") == "foreign"
+
+
+def test_uninstall_rechecks_target_identity_immediately_before_move(tmp_path, capsys, monkeypatch):
+    target, receipt_path = _install_receipted_fixture(tmp_path, capsys, monkeypatch)
+    original_validate = install._validate_manifest
+    original_target = target.with_name("DCC-MCP-original")
+    foreign = target / "foreign.txt"
+
+    def swap_after_validation(receipt, validated_target):
+        failure = original_validate(receipt, validated_target)
+        if failure is None and not original_target.exists():
+            os.replace(target, original_target)
+            target.mkdir()
+            foreign.write_text("foreign", encoding="utf-8")
+        return failure
+
+    monkeypatch.setattr(install, "_validate_manifest", swap_after_validation)
+
+    assert (
+        install.main(["uninstall", "--json", "--yes", "--receipt-path", str(receipt_path)])
+        == install.EXIT_PREFLIGHT
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["failure_reason"] == "install_identity_changed"
+    assert foreign.read_text(encoding="utf-8") == "foreign"
+    assert original_target.is_dir()
+
+
+def test_windows_cleanup_deferral_is_persisted_and_converges_on_retry(
+    tmp_path, capsys, monkeypatch
+):
+    plugin_root = tmp_path / "plugins"
+    target = plugin_root / install.PLUGIN_NAME
+    target.mkdir(parents=True)
+    (target / "old.py").write_text("old", encoding="utf-8")
+    locked = True
+    original_rmtree = install.shutil.rmtree
+    core_safe_remove = __import__(
+        "dcc_mcp_core.deployment", fromlist=["safe_remove_tree"]
+    ).safe_remove_tree
+
+    def legacy_remove(path, *args, **kwargs):
+        candidate = Path(path)
+        if locked and candidate.parent == plugin_root and ".backup-" in candidate.name:
+            raise PermissionError("simulated Toolbag lock")
+        return original_rmtree(path, *args, **kwargs)
+
+    def safe_remove(path):
+        candidate = Path(path)
+        if locked and candidate.parent == plugin_root and ".backup-" in candidate.name:
+            return {
+                "success": False,
+                "status": "requires_restart",
+                "requires_restart": True,
+                "reason": "windows_file_lock",
+                "path": str(candidate),
+                "locked_path": str(candidate / "__main__.py"),
+            }
+        return core_safe_remove(candidate)
+
+    monkeypatch.setattr(install.shutil, "rmtree", legacy_remove)
+    monkeypatch.setattr(install, "_safe_remove_tree", safe_remove, raising=False)
+    monkeypatch.setattr(install, "_is_windows_lock", lambda _exc: True)
+    monkeypatch.setattr(install, "_windows_file_version", lambda _path: None)
+    monkeypatch.setattr(
+        install,
+        "_verify_install",
+        lambda _args, _receipt: (True, "ok", {"readiness": {"success": True}}),
+    )
+    args = _standard_args(tmp_path, "install", "--yes")
+
+    assert install.main(args) == install.EXIT_REQUIRES_RESTART
+    first = json.loads(capsys.readouterr().out)
+    assert first["failure_reason"] == "windows_file_lock"
+    receipt_path = tmp_path / "marmoset.json"
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt["pending_cleanup"]
+    orphan = Path(receipt["pending_cleanup"][0]["path"])
+    assert orphan.is_dir()
+
+    locked = False
+    assert install.main(args) == install.EXIT_OK
+    capsys.readouterr()
+    assert not orphan.exists()
+    assert not list(plugin_root.glob(".*.backup-*"))
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    assert receipt.get("pending_cleanup") == []
+
+
+def test_probe_wrong_shape_returns_stable_json(tmp_path, capsys, monkeypatch):
+    completed = types.SimpleNamespace(returncode=0, stdout="{}\n", stderr="")
+    monkeypatch.setattr(install.subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(install, "_windows_file_version", lambda _path: None)
+
+    assert install.main(_standard_args(tmp_path, "install", "--dry-run")) == 10
+    report = json.loads(capsys.readouterr().out)
+    _assert_install_report_schema(report)
+    assert report["failure_reason"] == "python_probe_invalid"
+
+
+def test_probe_failure_redacts_credentials_and_local_paths(tmp_path, capsys, monkeypatch):
+    completed = types.SimpleNamespace(
+        returncode=1,
+        stdout="",
+        stderr=r"TOKEN=review-secret C:\private\workspace\adapter.py",
+    )
+    monkeypatch.setattr(install.subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(install, "_windows_file_version", lambda _path: None)
+
+    assert install.main(_standard_args(tmp_path, "install", "--dry-run")) == 10
+    report = json.loads(capsys.readouterr().out)
+    _assert_install_report_schema(report)
+    rendered = json.dumps(report)
+    assert "review-secret" not in rendered
+    assert "private" not in rendered
+    assert len(report["message"]) <= install.MAX_PUBLIC_MESSAGE_CHARS
+
+
+@pytest.mark.parametrize(
+    ("adapter_version", "core_version", "reason"),
+    [
+        ("0.0.1", "0.20.19", "adapter_version_mismatch"),
+        (install.__version__, "0.1.0", "core_version_unsupported"),
+    ],
+)
+def test_preflight_binds_current_adapter_and_core_floor(
+    tmp_path, capsys, monkeypatch, adapter_version, core_version, reason
+):
+    scripts = tmp_path / "scripts"
+    scripts.mkdir()
+    executable = scripts / (
+        "dcc-mcp-marmoset.exe" if install.os.name == "nt" else "dcc-mcp-marmoset"
+    )
+    executable.write_bytes(b"")
+    completed = types.SimpleNamespace(
+        returncode=0,
+        stderr="",
+        stdout=json.dumps(
+            {
+                "distribution": "dcc-mcp-marmoset",
+                "adapter_version": adapter_version,
+                "core_version": core_version,
+                "adapter_path": str(Path(install.__file__).resolve()),
+                "core_path": str(tmp_path / "dcc_mcp_core" / "__init__.py"),
+                "scripts": str(scripts),
+            }
+        )
+        + "\n",
+    )
+    monkeypatch.setattr(install.subprocess, "run", lambda *args, **kwargs: completed)
+    monkeypatch.setattr(install, "_windows_file_version", lambda _path: None)
+
+    assert install.main(_standard_args(tmp_path, "install", "--dry-run")) == 10
+    report = json.loads(capsys.readouterr().out)
+    assert report["failure_reason"] == reason
+
+
+def test_shared_schema_is_the_only_install_contract():
+    from dcc_mcp_core.deployment import load_install_sop_schema
+
+    root = Path(install.__file__).resolve().parents[2]
+    packaged = json.loads(
+        (root / "src/dcc_mcp_marmoset/schemas/adapter-install-sop-v1.schema.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert install.load_install_sop_schema() == load_install_sop_schema()
+    assert packaged == load_install_sop_schema()
+    assert "dcc-mcp-core>=0.20.14,<1.0.0" in (root / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_bootstrap_capture_preserves_hostile_baseexception_identity(tmp_path, monkeypatch):
+    plugin_dir = tmp_path / "DCC-MCP"
+    plugin_dir.mkdir()
+
+    class HostileBootstrap(BaseException):
+        def __str__(self):
+            raise RuntimeError("secondary-rendering-error")
+
+    original = HostileBootstrap()
+
+    def hostile_log(_message):
+        raise SystemExit("secondary-host-log-error")
+
+    fake_mset = types.SimpleNamespace(
+        getPluginPath=lambda: str(plugin_dir / "__main__.py"), err=hostile_log
+    )
+
+    def fail_start(_mset, _plugin_dir):
+        raise original
+
+    monkeypatch.setitem(sys.modules, "mset", fake_mset)
+    monkeypatch.setitem(sys.modules, "_runtime", types.SimpleNamespace(start_runtime=fail_start))
+    entrypoint = Path(install.__file__).resolve().parent / "toolbag_plugin" / "__main__.py"
+
+    caught = None
+    try:
+        runpy.run_path(str(entrypoint), run_name="__main__")
+    except BaseException as exc:
+        caught = exc
+
+    assert caught is original
+    diagnostic = json.loads((plugin_dir / install.BOOTSTRAP_ERROR_NAME).read_text(encoding="utf-8"))
+    assert diagnostic["error_class"].endswith("HostileBootstrap")
+    assert "secondary-rendering-error" not in json.dumps(diagnostic)
+    assert len(diagnostic["message"]) <= install.MAX_PUBLIC_MESSAGE_CHARS
+
+
+def test_bootstrap_diagnostic_is_redacted_before_verify_json(tmp_path, capsys, monkeypatch):
+    target, receipt_path = _install_receipted_fixture(tmp_path, capsys, monkeypatch)
+    monkeypatch.undo()
+    monkeypatch.setattr(install, "_windows_file_version", lambda _path: None)
+    secret = "bootstrap-super-secret"
+    diagnostic = {
+        "stage": "toolbag_plugin_bootstrap",
+        "error_class": "RuntimeError",
+        "message": f"TOKEN={secret}",
+        "traceback": rf"C:\private\host.py TOKEN={secret}",
+    }
+    (target / install.BOOTSTRAP_ERROR_NAME).write_text(json.dumps(diagnostic), encoding="utf-8")
+
+    assert install.main(["verify", "--json", "--receipt-path", str(receipt_path)]) == 40
+    rendered = capsys.readouterr().out
+    report = json.loads(rendered)
+    _assert_install_report_schema(report)
+    assert report["failure_reason"] == "bootstrap_error"
+    assert secret not in rendered
+    assert "private" not in rendered
+
+
+def test_unexpected_lifecycle_failure_still_emits_schema_shaped_json(tmp_path, capsys, monkeypatch):
+    monkeypatch.setattr(
+        install, "_handle_status", lambda _args: (_ for _ in ()).throw(KeyError("x"))
+    )
+
+    assert (
+        install.main(["status", "--json", "--receipt-path", str(tmp_path / "receipt.json")])
+        == install.EXIT_INSTALL
+    )
+    report = json.loads(capsys.readouterr().out)
+    _assert_install_report_schema(report)
+    assert set(install.load_install_sop_schema()["required"]) <= set(report)
+    assert report["failure_reason"] == "internal_error"
+    assert "KeyError" in report["details"]["error_type"]

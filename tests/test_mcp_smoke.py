@@ -141,18 +141,9 @@ def test_direct_mcp_search_load_and_typed_call(monkeypatch, tmp_path):
         assert "marmoset_scene__ping" in _text(loaded)
 
         ping = client.call("marmoset_scene__ping", {})
-        job_id = ping["result"]["structuredContent"]["job_id"]
-        deadline = time.time() + 3
-        while time.time() < deadline:
-            status = client.call(
-                "jobs_get_status",
-                {"job_id": job_id, "include_result": True},
-            )["result"]["structuredContent"]
-            if status["status"] in {"completed", "failed", "cancelled", "interrupted"}:
-                break
-            time.sleep(0.05)
-        assert status["status"] == "completed"
-        assert "Marmoset Toolbag bridge is ready" in json.dumps(status["result"])
+        result = ping["result"]["structuredContent"]
+        assert result["success"] is True
+        assert result["message"] == "Marmoset Toolbag bridge is ready."
         assert "diagnostics.ping" in bridge.calls
     finally:
         server.stop()
