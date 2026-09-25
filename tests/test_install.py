@@ -786,13 +786,13 @@ def test_shared_schema_is_the_only_install_contract():
     from dcc_mcp_core.deployment import load_install_sop_schema
 
     root = Path(install.__file__).resolve().parents[2]
-    packaged = json.loads(
-        (root / "src/dcc_mcp_marmoset/schemas/adapter-install-sop-v1.schema.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    # The schema is owned by dcc-mcp-core and is republished under a new `-vN`
+    # artifact name whenever its identity changes (core 0.20.34 froze -v1 and
+    # moved to -v2), so compare against whatever the loader resolves to now
+    # rather than against one frozen revision.
     assert install.load_install_sop_schema() == load_install_sop_schema()
-    assert packaged == load_install_sop_schema()
+    vendored = root / "src" / "dcc_mcp_marmoset" / "schemas"
+    assert not list(vendored.glob("adapter-install-sop-*.json"))
     assert "dcc-mcp-core>=0.20.14,<1.0.0" in (root / "pyproject.toml").read_text(encoding="utf-8")
 
 

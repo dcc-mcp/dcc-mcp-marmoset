@@ -26,7 +26,7 @@ from dcc_mcp_core.deployment import (
     INSTALL_EXIT_PREFLIGHT,
     INSTALL_EXIT_REQUIRES_RESTART,
     INSTALL_EXIT_VERIFY,
-    INSTALL_SOP_SCHEMA_VERSION,
+    load_install_sop_schema,
 )
 from dcc_mcp_core.deployment import (
     load_install_sop_schema as _load_install_sop_schema,
@@ -44,7 +44,14 @@ EXIT_INSTALL = INSTALL_EXIT_INSTALL
 EXIT_VERIFY = INSTALL_EXIT_VERIFY
 EXIT_REQUIRES_RESTART = INSTALL_EXIT_REQUIRES_RESTART
 
-SCHEMA_VERSION = INSTALL_SOP_SCHEMA_VERSION
+# `INSTALL_SOP_SCHEMA_VERSION` is the *artifact* revision of the published schema
+# file (the `-vN` suffix), not the report document's `schema_version` field. Core
+# 0.20.34 repurposed it from 1 to 2 while the schema keeps pinning the document
+# field to the constant 1, so copying it into a report makes that report invalid.
+try:
+    SCHEMA_VERSION = int(load_install_sop_schema()["properties"]["schema_version"]["const"])
+except (ImportError, KeyError, TypeError, ValueError):
+    SCHEMA_VERSION = 1
 RECEIPT_VERSION = 1
 DCC_TYPE = "marmoset"
 DISTRIBUTION_NAME = "dcc-mcp-marmoset"
