@@ -167,8 +167,8 @@ def test_install_sop_contract_and_exit_codes_are_stable():
     ] == [0, 10, 20, 30, 40, 50]
 
 
-def test_report_schema_version_ignores_cores_artifact_revision():
-    """The document field and Core's artifact revision are different numbers.
+def test_report_schema_version_ignores_cores_artifact_revision(tmp_path, capsys):
+    """A report carries the document version, never Core's artifact revision.
 
     Core repurposed ``INSTALL_SOP_SCHEMA_VERSION`` into the schema artifact
     revision (the ``-vN`` file suffix) while the schema keeps pinning the report
@@ -183,9 +183,17 @@ def test_report_schema_version_ignores_cores_artifact_revision():
         install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION
         == (install.load_install_sop_schema()["properties"]["schema_version"]["const"])
     )
-    # Guard the guard: the test above is only meaningful while Core's artifact
-    # revision and the document version differ, which is the drift it exists for.
-    assert INSTALL_SOP_SCHEMA_VERSION != install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION
+    # Core only separates the artifact revision from the document version from
+    # 0.20.34 on, and the declared floor is 0.20.14; below that both are 1 and a
+    # report has nothing to get wrong, so only assert the two apart when they
+    # are actually distinguishable.
+    if INSTALL_SOP_SCHEMA_VERSION != install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION:
+        install.main(
+            ["install", "--json", "--dry-run", "--receipt-path", str(tmp_path / "guard.json")]
+        )
+        report = json.loads(capsys.readouterr().out)
+        assert report["schema_version"] == install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION
+        assert report["schema_version"] != INSTALL_SOP_SCHEMA_VERSION
 
 
 def test_interpreter_probe_reports_the_artifact_revision_not_the_document_field():
