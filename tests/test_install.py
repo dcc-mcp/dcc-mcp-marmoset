@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import runpy
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -164,6 +165,58 @@ def test_install_sop_contract_and_exit_codes_are_stable():
         install.EXIT_VERIFY,
         install.EXIT_REQUIRES_RESTART,
     ] == [0, 10, 20, 30, 40, 50]
+
+
+def test_report_schema_version_ignores_cores_artifact_revision(tmp_path, capsys):
+    """A report carries the document version, never Core's artifact revision.
+
+    Core repurposed ``INSTALL_SOP_SCHEMA_VERSION`` into the schema artifact
+    revision (the ``-vN`` file suffix) while the schema keeps pinning the report
+    document's ``schema_version`` to a constant. Conflating the two once made
+    every install fail preflight with ``install_schema_mismatch``.
+    """
+
+    from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION
+
+    assert install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION == 1
+    assert (
+        install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION
+        == (install.load_install_sop_schema()["properties"]["schema_version"]["const"])
+    )
+    # Core only separates the artifact revision from the document version from
+    # 0.20.34 on, and the declared floor is 0.20.14; below that both are 1 and a
+    # report has nothing to get wrong, so only assert the two apart when they
+    # are actually distinguishable.
+    if INSTALL_SOP_SCHEMA_VERSION != install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION:
+        install.main(
+            ["install", "--json", "--dry-run", "--receipt-path", str(tmp_path / "guard.json")]
+        )
+        report = json.loads(capsys.readouterr().out)
+        assert report["schema_version"] == install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION
+        assert report["schema_version"] != INSTALL_SOP_SCHEMA_VERSION
+
+
+def test_interpreter_probe_reports_the_artifact_revision_not_the_document_field():
+    """The probe compares artifact revisions, so it must not emit the document's.
+
+    ``_INTERPRETER_PROBE`` runs inside the target interpreter and ``_probe_python``
+    validates its payload. Sending the document version there made the drift check
+    compare the artifact revision against the document version and fail preflight.
+    """
+
+    from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION
+
+    completed = subprocess.run(
+        [sys.executable, "-c", install._INTERPRETER_PROBE],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    payload = json.loads(completed.stdout.strip().splitlines()[-1])
+
+    assert payload["schema_artifact_revision"] == INSTALL_SOP_SCHEMA_VERSION
+    assert install._probe_python(Path(sys.executable), failure_code=install.EXIT_PREFLIGHT)
 
 
 def test_every_lifecycle_verb_emits_the_required_schema_fields(tmp_path, capsys):
@@ -786,13 +839,13 @@ def test_shared_schema_is_the_only_install_contract():
     from dcc_mcp_core.deployment import load_install_sop_schema
 
     root = Path(install.__file__).resolve().parents[2]
-    packaged = json.loads(
-        (root / "src/dcc_mcp_marmoset/schemas/adapter-install-sop-v1.schema.json").read_text(
-            encoding="utf-8"
-        )
-    )
+    # The schema is owned by dcc-mcp-core and is republished under a new `-vN`
+    # artifact name whenever its identity changes (core 0.20.34 froze -v1 and
+    # moved to -v2), so compare against whatever the loader resolves to now
+    # rather than against one frozen revision.
     assert install.load_install_sop_schema() == load_install_sop_schema()
-    assert packaged == load_install_sop_schema()
+    vendored = root / "src" / "dcc_mcp_marmoset" / "schemas"
+    assert not list(vendored.glob("adapter-install-sop-*.json"))
     assert "dcc-mcp-core>=0.20.14,<1.0.0" in (root / "pyproject.toml").read_text(encoding="utf-8")
 
 
