@@ -26,6 +26,7 @@ from dcc_mcp_core.deployment import (
     INSTALL_EXIT_PREFLIGHT,
     INSTALL_EXIT_REQUIRES_RESTART,
     INSTALL_EXIT_VERIFY,
+    INSTALL_SOP_SCHEMA_VERSION,
     load_install_sop_schema,
 )
 from dcc_mcp_core.deployment import (
@@ -48,10 +49,13 @@ EXIT_REQUIRES_RESTART = INSTALL_EXIT_REQUIRES_RESTART
 # file (the `-vN` suffix), not the report document's `schema_version` field. Core
 # 0.20.34 repurposed it from 1 to 2 while the schema keeps pinning the document
 # field to the constant 1, so copying it into a report makes that report invalid.
+# It is only ever compared against another interpreter's copy, for artifact drift.
 try:
-    SCHEMA_VERSION = int(load_install_sop_schema()["properties"]["schema_version"]["const"])
+    INSTALL_SOP_DOCUMENT_SCHEMA_VERSION = int(
+        load_install_sop_schema()["properties"]["schema_version"]["const"]
+    )
 except (ImportError, KeyError, TypeError, ValueError):
-    SCHEMA_VERSION = 1
+    INSTALL_SOP_DOCUMENT_SCHEMA_VERSION = 1
 RECEIPT_VERSION = 1
 DCC_TYPE = "marmoset"
 DISTRIBUTION_NAME = "dcc-mcp-marmoset"
@@ -211,7 +215,7 @@ def _receipt_path(value: Optional[Path]) -> Path:
 
 def _base_report(command: str, receipt_path: Path) -> dict[str, Any]:
     return {
-        "schema_version": SCHEMA_VERSION,
+        "schema_version": INSTALL_SOP_DOCUMENT_SCHEMA_VERSION,
         "status": "running",
         "dcc_type": DCC_TYPE,
         "command": command,
@@ -659,7 +663,8 @@ print(json.dumps({
     "core_version": importlib.metadata.version("dcc-mcp-core"),
     "core_path": dcc_mcp_core.__file__,
     "scripts": sysconfig.get_path("scripts"),
-    "schema_version": INSTALL_SOP_SCHEMA_VERSION,
+    # The schema *artifact* revision, never the report document's schema_version.
+    "schema_artifact_revision": INSTALL_SOP_SCHEMA_VERSION,
     "schema_sha256": hashlib.sha256(schema_bytes).hexdigest(),
 }))
 """
@@ -745,7 +750,7 @@ def _probe_python(python: Path, *, failure_code: int) -> dict[str, Any]:
         )
     extended = {
         "adapter_module_version",
-        "schema_version",
+        "schema_artifact_revision",
         "schema_sha256",
     }
     if any(key not in result for key in extended):
@@ -763,8 +768,8 @@ def _probe_python(python: Path, *, failure_code: int) -> dict[str, Any]:
             "Target Python package metadata and adapter module version disagree.",
         )
     if (
-        isinstance(result["schema_version"], bool)
-        or result["schema_version"] != SCHEMA_VERSION
+        isinstance(result["schema_artifact_revision"], bool)
+        or result["schema_artifact_revision"] != INSTALL_SOP_SCHEMA_VERSION
         or result["schema_sha256"] != _schema_sha256(load_install_sop_schema())
     ):
         raise LifecycleError(
