@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/dcc-mcp/dcc-mcp-marmoset/compare/v0.1.2...v0.1.3) (2026-09-25)
+
+
+### Bug Fixes
+
+* **install:** emit the Install SOP document schema version and load Core's schema ([8e26aee](https://github.com/dcc-mcp/dcc-mcp-marmoset/commit/8e26aee4625fb03de0e2826372ce6cfa3250d70e))
+
 ## [0.1.2](https://github.com/dcc-mcp/dcc-mcp-marmoset/compare/v0.1.1...v0.1.2) (2026-08-26)
 
 
