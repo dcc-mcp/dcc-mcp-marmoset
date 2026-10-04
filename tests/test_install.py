@@ -168,15 +168,15 @@ def test_install_sop_contract_and_exit_codes_are_stable():
 
 
 def test_report_schema_version_ignores_cores_artifact_revision(tmp_path, capsys):
-    """A report carries the document version, never Core's artifact revision.
+    """A report carries the document version, never the artifact revision.
 
-    Core repurposed ``INSTALL_SOP_SCHEMA_VERSION`` into the schema artifact
-    revision (the ``-vN`` file suffix) while the schema keeps pinning the report
-    document's ``schema_version`` to a constant. Conflating the two once made
-    every install fail preflight with ``install_schema_mismatch``.
+    The schema artifact revision is the ``-vN`` file suffix (now 2) while the
+    schema keeps pinning the report document's ``schema_version`` to a constant
+    1. Conflating the two once made every install fail preflight with
+    ``install_schema_mismatch``.
     """
 
-    from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION
+    artifact_revision = install._schema_artifact_revision(install.load_install_sop_schema())
 
     assert install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION == 1
     assert (
@@ -187,13 +187,13 @@ def test_report_schema_version_ignores_cores_artifact_revision(tmp_path, capsys)
     # 0.20.34 on, and the declared floor is 0.20.14; below that both are 1 and a
     # report has nothing to get wrong, so only assert the two apart when they
     # are actually distinguishable.
-    if INSTALL_SOP_SCHEMA_VERSION != install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION:
+    if artifact_revision != install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION:
         install.main(
             ["install", "--json", "--dry-run", "--receipt-path", str(tmp_path / "guard.json")]
         )
         report = json.loads(capsys.readouterr().out)
         assert report["schema_version"] == install.INSTALL_SOP_DOCUMENT_SCHEMA_VERSION
-        assert report["schema_version"] != INSTALL_SOP_SCHEMA_VERSION
+        assert report["schema_version"] != artifact_revision
 
 
 def test_interpreter_probe_reports_the_artifact_revision_not_the_document_field():
@@ -204,7 +204,8 @@ def test_interpreter_probe_reports_the_artifact_revision_not_the_document_field(
     compare the artifact revision against the document version and fail preflight.
     """
 
-    from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION
+    local_schema = install.load_install_sop_schema()
+    artifact_revision = install._schema_artifact_revision(local_schema)
 
     completed = subprocess.run(
         [sys.executable, "-c", install._INTERPRETER_PROBE],
@@ -215,7 +216,15 @@ def test_interpreter_probe_reports_the_artifact_revision_not_the_document_field(
     )
     payload = json.loads(completed.stdout.strip().splitlines()[-1])
 
-    assert payload["schema_artifact_revision"] == INSTALL_SOP_SCHEMA_VERSION
+    # The probe derives the revision from the artifact's own ``$id``, so this
+    # compares how each interpreter derived the number as well as the number.
+    assert payload["schema_artifact_revision"] == artifact_revision
+    assert (
+        payload["schema_sha256"]
+        == hashlib.sha256(
+            json.dumps(local_schema, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+    )
     assert install._probe_python(Path(sys.executable), failure_code=install.EXIT_PREFLIGHT)
 
 
