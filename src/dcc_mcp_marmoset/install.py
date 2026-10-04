@@ -26,7 +26,6 @@ from dcc_mcp_core.deployment import (
     INSTALL_EXIT_PREFLIGHT,
     INSTALL_EXIT_REQUIRES_RESTART,
     INSTALL_EXIT_VERIFY,
-    INSTALL_SOP_SCHEMA_VERSION,
     load_install_sop_schema,
 )
 from dcc_mcp_core.deployment import (
@@ -45,11 +44,30 @@ EXIT_INSTALL = INSTALL_EXIT_INSTALL
 EXIT_VERIFY = INSTALL_EXIT_VERIFY
 EXIT_REQUIRES_RESTART = INSTALL_EXIT_REQUIRES_RESTART
 
-# `INSTALL_SOP_SCHEMA_VERSION` is the *artifact* revision of the published schema
-# file (the `-vN` suffix), not the report document's `schema_version` field. Core
-# 0.20.34 repurposed it from 1 to 2 while the schema keeps pinning the document
-# field to the constant 1, so copying it into a report makes that report invalid.
+
+# The `-vN` revision of the published Install SOP schema *artifact*, which is a
+# separate counter from the report document's `schema_version` field: Core 0.20.34
+# moved the artifact to `-v2` while the schema keeps pinning the document field to
+# the constant 1, so copying the revision into a report makes that report invalid.
 # It is only ever compared against another interpreter's copy, for artifact drift.
+#
+# Both sides derive the number from the artifact's own canonical `$id` rather than
+# importing a constant from Core. The revision lives in that `$id`, Core has
+# already renamed the constant once, and the probe below runs against whatever
+# Core the target interpreter happens to have -- deriving it keeps the two sides
+# comparable across that range instead of agreeing on a symbol name.
+def _schema_artifact_revision(schema):
+    """Return the ``-vN`` revision of a published Install SOP schema artifact."""
+    return int(str(schema["$id"]).rsplit("-v", 1)[-1].split(".", 1)[0])
+
+
+try:
+    SCHEMA_ARTIFACT_REVISION = _schema_artifact_revision(load_install_sop_schema())
+except (ImportError, KeyError, TypeError, ValueError):
+    # An unreadable artifact has no revision to compare, and `0` matches no
+    # published `-vN`: the drift check below then fails closed instead of
+    # treating an unknown artifact as the expected one.
+    SCHEMA_ARTIFACT_REVISION = 0
 try:
     INSTALL_SOP_DOCUMENT_SCHEMA_VERSION = int(
         load_install_sop_schema()["properties"]["schema_version"]["const"]
@@ -652,9 +670,10 @@ import json
 import sysconfig
 import dcc_mcp_core
 import dcc_mcp_marmoset
-from dcc_mcp_core.deployment import INSTALL_SOP_SCHEMA_VERSION, load_install_sop_schema
+from dcc_mcp_core.deployment import load_install_sop_schema
 schema = load_install_sop_schema()
 schema_bytes = json.dumps(schema, sort_keys=True, separators=(",", ":")).encode("utf-8")
+artifact_revision = int(str(schema["$id"]).rsplit("-v", 1)[-1].split(".", 1)[0])
 print(json.dumps({
     "distribution": "dcc-mcp-marmoset",
     "adapter_version": importlib.metadata.version("dcc-mcp-marmoset"),
@@ -664,7 +683,7 @@ print(json.dumps({
     "core_path": dcc_mcp_core.__file__,
     "scripts": sysconfig.get_path("scripts"),
     # The schema *artifact* revision, never the report document's schema_version.
-    "schema_artifact_revision": INSTALL_SOP_SCHEMA_VERSION,
+    "schema_artifact_revision": artifact_revision,
     "schema_sha256": hashlib.sha256(schema_bytes).hexdigest(),
 }))
 """
@@ -769,7 +788,7 @@ def _probe_python(python: Path, *, failure_code: int) -> dict[str, Any]:
         )
     if (
         isinstance(result["schema_artifact_revision"], bool)
-        or result["schema_artifact_revision"] != INSTALL_SOP_SCHEMA_VERSION
+        or result["schema_artifact_revision"] != SCHEMA_ARTIFACT_REVISION
         or result["schema_sha256"] != _schema_sha256(load_install_sop_schema())
     ):
         raise LifecycleError(
