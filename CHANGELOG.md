@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.4](https://github.com/dcc-mcp/dcc-mcp-marmoset/compare/v0.1.3...v0.1.4) (2026-11-24)
+
+
+### Documentation
+
+* refresh the generated DCC-MCP host matrix pointer ([26a3947](https://github.com/dcc-mcp/dcc-mcp-marmoset/commit/26a39473c5df1947dd840120469044fee76f407e))
+* refresh the generated DCC-MCP host matrix pointer ([7de0df8](https://github.com/dcc-mcp/dcc-mcp-marmoset/commit/7de0df8658a1c1d27ed29b8be9b322ee9b52fe92))
+
 ## [0.1.3](https://github.com/dcc-mcp/dcc-mcp-marmoset/compare/v0.1.2...v0.1.3) (2026-10-09)
 
 
